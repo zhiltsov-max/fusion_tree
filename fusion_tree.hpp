@@ -28,7 +28,10 @@ public:
 
 
 
+	iterator at(const Key& key) {
+		Node* node = m_root->findBucket(key);
 
+	}
 
 private:
 	class Node {
@@ -45,7 +48,7 @@ private:
 	class Node_Leaf;
 
 
-	Node* m_root;
+	Node_Regular* m_root;
 };
 
 template< size_t KeyLength, class Value >
@@ -76,6 +79,20 @@ private:
 	Children m_children;
 	size_t m_childrenCount;
 
+
+	Node* findBucket(const Key& key) {
+		if (m_childrenCount == 0) {
+			return nullptr;
+		}
+
+		Key sketch;
+		computeKeySketch(key, sketch);
+
+		for (size_t i = 0; i < m_childrenCount; ++i) {
+
+		}
+	}
+
 	/* Computes a node sketch.
 	 * Have to be called after every node modification.
 	 * Complexity: O(capacity ^ 4)
@@ -86,8 +103,7 @@ private:
 		if (m_childrenCount < 2) {
 			return;
 		}
-
-		Key branchingPoints;
+		
 		for (size_t nodeIdx = 0; nodeIdx < capacity; ++nodeIdx) {
 			const Node* node = m_children[nodeIdx];
 			if (node == nullptr) {
@@ -95,71 +111,78 @@ private:
 			}
 
 			// Compute child's sketch
-			const size_t branchingPointsCount = determineBranchingPoints(node->m_key, branchingPoints);
+			Key sketch;
+			computeKeySketch(node->m_key, sketch);
 
-			vector<size_t> branchingPointsPositions;
-			for (size_t i = 0; i < branchingPointsCount; ++i) {
-				if (branchingPoints[point] == true) {
-					branchingPointsPositions.push_back(i);
-				}
-			}
-
-			Key sketch = branchingPoints & node->m_key;
-
-			// Create magic number m
-			vector<bool> mParts((size_t)std::pow(branchingPointsCount, 3));
-			mParts[KeyLength - branchingPointsPositions[0]] = true;
-			size_t partsCount = 1;
-
-			for (size_t i = 1; i < branchingPointsCount; ++i) {
-				size_t j = 0;
-				size_t k = 0;
-				size_t l = 0;
-
-				while (j != branchingPointsCount) {
-					if (k == branchingPointsCount) { ++j; k = 0; l = 0; continue; }
-					if (l == partsCount) { ++k; l = 0; continue; }
-
-					size_t number = branchingPointsPositions[i] + mParts[l] - branchingPointsPositions[j];
-					if (mParts[number] == false) {
-						mParts[number] = true;
-						++partsCount;
-					}
-					
-					++l;
-				}
-				
-				for (auto it = mParts.begin(), iend = mParts.end(); it != iend; ++it) {
-					if (*it == false) {
-						*it = true;
-						break;
-					}
-				}
-			}
-			
-			unsigned long long m = 0;
-			
-			size_t minPower = (size_t)(-1u);
-
-			for (size_t i = 0, iend = mParts.size(), id = 0; i != iend; ++i) {
-				if (mParts[i] == true) {
-					const size_t m_ith = branchingPointsPositions[id] + (size_t)std::pow(mParts.size(), i);
-					if (m_ith < minPower) {
-						minPower = m_ith;
-					}
-					m += 1ull << (i + m_ith);
-					++id;
-				}
-			}
-
-			unsigned long long product = static_cast<unsigned long long>(sketch) * m;
-			product >>= minPower;
-
-			sketch = product;
-			sketch.set(mParts.size());
-			sketch <<= nodeIdx;
 			m_sketch |= sketch;
 		}
+	}
+
+	void computeKeySketch(const Key& key, Key& sketch) {
+		Key branchingPoints;
+		const size_t branchingPointsCount = determineBranchingPoints(key, branchingPoints);
+
+		vector<size_t> branchingPointsPositions;
+		for (size_t i = 0; i < branchingPointsCount; ++i) {
+			if (branchingPoints[point] == true) {
+				branchingPointsPositions.push_back(i);
+			}
+		}
+
+		Key sketch = branchingPoints & node->m_key;
+
+		// Create magic number m
+		vector<bool> mParts((size_t)std::pow(branchingPointsCount, 3));
+		mParts[KeyLength - branchingPointsPositions[0]] = true;
+		size_t partsCount = 1;
+
+		for (size_t i = 1; i < branchingPointsCount; ++i) {
+			size_t j = 0;
+			size_t k = 0;
+			size_t l = 0;
+
+			while (j != branchingPointsCount) {
+				if (k == branchingPointsCount) { ++j; k = 0; l = 0; continue; }
+				if (l == partsCount) { ++k; l = 0; continue; }
+
+				size_t number = branchingPointsPositions[i] + mParts[l] - branchingPointsPositions[j];
+				if (mParts[number] == false) {
+					mParts[number] = true;
+					++partsCount;
+				}
+					
+				++l;
+			}
+				
+			for (auto it = mParts.begin(), iend = mParts.end(); it != iend; ++it) {
+				if (*it == false) {
+					*it = true;
+					break;
+				}
+			}
+		}
+			
+		unsigned long long m = 0;
+			
+		size_t minPower = (size_t)(-1u);
+
+		for (size_t i = 0, iend = mParts.size(), id = 0; i != iend; ++i) {
+			if (mParts[i] == true) {
+				const size_t m_ith = branchingPointsPositions[id] + (size_t)std::pow(mParts.size(), i);
+				if (m_ith < minPower) {
+					minPower = m_ith;
+				}
+				m += 1ull << (i + m_ith);
+				++id;
+			}
+		}
+
+		unsigned long long product = static_cast<unsigned long long>(sketch) * m;
+		product >>= minPower;
+
+		sketch = product;
+		sketch.set(mParts.size());
+		sketch <<= nodeIdx;
 	}
 
 	size_t determineBranchingPoints(const Key& nodeKey, Key& branchingPoints) {
