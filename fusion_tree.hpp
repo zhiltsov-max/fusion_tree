@@ -6,10 +6,10 @@
 #include <array>
 #include <vector>
 
-/*
-	KeyLength == log(u) where u is |U| - universe size
-
-
+/* KeyLength == log(u) where u is |U| - universe size
+ * See http://courses.csail.mit.edu/6.897/spring03/scribe_notes/L4/lecture4.pdf
+ * for conceptual notes.
+ * This implementation accepts KeyLength value up to 2^64.
 */
 template< size_t KeyLength, class Value >
 class fusion_tree_static
@@ -23,74 +23,251 @@ private:
 
 	template< class T >
 	using vector = std::vector<T>;
+
 public:
 	using Key = bitset<KeyLength>;
+	class iterator;
+	class const_iterator;
+	using reference = Value&;
+	using const_reference = const Value&;
 
 
+	fusion_tree_static() :
+		m_root(nullptr)
+	{}
+	~fusion_tree_static() {
+		if (m_root != nullptr) {
+			delete m_root;
+		}
+	}
 
-	iterator at(const Key& key) {
-		Node* node = m_root->findBucket(key);
+	const_reference at(const Key& key) const {
+		 iterator it(m_root->findBucket(key));
+		 return *it;
+	}
+	reference at(const Key& key) {
+		iterator it(m_root->findBucket(key));
+		return *it;
+	}
+
+	const_iterator cbegin() const {
+		return const_iterator(m_root ? findMinNode(m_root) : nullptr);
+	}
+	const_iterator begin() const {
+		return cbegin();
+	}
+	iterator begin() const {
+		return iterator(m_root ? findMinNode(m_root) : nullptr);
+	}
+
+	const_iterator cend() const {
+		return const_iterator(nullptr);
+	}
+	const_iterator end() const {
+		return cend();
+	}
+	iterator end() const {
+		return iterator(nullptr);
+	}
+
+	iterator insert(const Key& key, const Value& value) {
+		// TO DO:
 
 	}
 
+	const_iterator find(const Key& key) const {
+		if (empty() == true) {
+			return cend();
+		}
+		return const_iterator(m_root->find(key));
+	}
+	iterator find(const Key& key) {
+		if (empty() == true) {
+			return cend();
+		}
+		return iterator(m_root->find(key));
+	}
+
+	bool empty() const {
+		return m_root == nullptr;
+	}
+
 private:
-	class Node {
-	public:
-		static constexpr size_t capacity;
-
-		virtual ~Node() = default;
-
-	protected:
-		Key m_key;
-	};
-
+	class Node;
 	class Node_Regular;
 	class Node_Leaf;
-
+	
 
 	Node_Regular* m_root;
 };
 
 template< size_t KeyLength, class Value >
-class fusion_tree_static<KeyLength, Value>::Node_Regular : public Node {
+class fusion_tree_static<KeyLength, Value>::Node /*Abstract*/ {
 public:
-	Node_Regular() :
-		m_children(),
-		m_sketch()
-	{
-		m_children.fill(nullptr);
-	}
-	
+	Node() = default;
+	virtual Node(const Node& other) = default;
+	virtual Node(Node&& other) = default;
+	virtual ~Node() = default;
+
+	virtual Node& operator=(const Node& other) = default;
+	virtual Node& operator=(Node&& other) = default;
+
+	virtual static bool isLeaf() const = 0;
+};
+
+template< size_t KeyLength, class Value >
+class fusion_tree_static<KeyLength, Value>::Node_Regular : public Node {
+private:
+	static constexpr size_t capacity = (size_t)std::pow(KeyLength, 1.0 / 5.0);
+	using Sketch = bitset<KeyLength>;
+	struct Children {
+		using BinHeap = bitset<capacity + (capacity - 1)>;
+
+		/* Represents a binary search tree as a binary heap.
+		* If Tree[x] == true then node x is exists.
+		*/
+		using Tree = BinHeap;
+		using Entry = std::pair<Key, Node*>;
+		using Values = vector<Entry>;
+
+		Tree tree;
+		Values values;
+
+		Children() :
+			values()
+		{
+			values.reserve(capacity);
+		}
+
+		~Children() {
+			for (Entry& e : values) {
+				if (e.second != nullptr) {
+					delete e.second;
+				}
+			}
+		}
+
+		const Entry& operator[](const size_t childIndex) const {
+			return values[childIndex];
+		}
+
+		Entry& operator[](const size_t childIndex) {
+			return values[childIndex];
+		}
+
+		size_t count() const {
+			return values.size();
+		}
+	};
+
+public:
 	virtual ~Node_Regular() override = default;
 
-	virtual bool isLeaf() const override {
-		return false; 
+	virtual static bool isLeaf() const override {
+		return false;
+	};
+
+	void insert(const Key& key, const Value& value) {
+		Node* node = find(key);
+		if (node != nullptr) {
+			static_cast<Node_Leaf*>(node)->data() = value;
+			return node;
+		}
+
+
 	}
 
-private:
-	using Sketch = bitset<KeyLength>;
-	using Children = array<Node*, capacity>;
+	bool contains(const Key& key) const {
+		return find(key) != nullptr;
+	}
 
-	Sketch m_sketch;
-
-	/* Child nodes. 
-	 * Keep it sorted.
-	*/
-	Children m_children;
-	size_t m_childrenCount;
-
-
-	Node* findBucket(const Key& key) {
-		if (m_childrenCount == 0) {
+	Node_Leaf* find(const Key& key) const {
+		if (m_children.count() == 0) {
 			return nullptr;
 		}
 
+		Children::Entry& entry = findBucket(key);
+		if (entry.second->isLeaf() == true) {
+			if (entry.first == key) {
+				return static_cast<Node_Leaf*>(entry.second);
+			} else {
+				return nullptr;
+			}
+		} else {
+			return entry.second->find(key);
+		}
+	}
+
+private:
+	Sketch m_sketch;
+	Children m_children;
+	
+	enum class Endianness : bool {
+		bigEndian = 0,
+		littleEndian = 1		
+	};
+	static Endianness WORD_ORDER = Endianness::bigEndian;
+	static Endianness determineEndianness() {
+		volatile int num = 1; // disable compiler optimization
+		WORD_ORDER = static_cast<Endianness>(*(char *)&num == 1);
+		return WORD_ORDER;
+	}
+
+	/* Returns position of Most Significant Bit set in number.
+	*/
+	template< class Number >
+	inline static size_t findMSB(const Number& number) {
+		/*
+			The code loads a 64-bit (IEEE-754 floating-point) double with a 32-bit integer
+			(with no paddding bits) by storing the integer in the mantissa while the exponent is set to 2^52.
+			From this newly minted double, 2^52 (expressed as a double) is subtracted,
+			which sets the resulting exponent to the log base 2 of the input value, v.
+			All that is left is shifting the exponent bits into position (20 bits right) and
+			subtracting the bias, 0x3FF (which is 1023 decimal).
+
+			This technique only takes 5 operations, but many CPUs are slow at manipulating doubles,
+			and the endianess of the architecture must be accommodated.
+		*/
+		determineEndianness();
+
+		union { 
+			unsigned int u[2]; 
+			double d; 
+		} t;
+
+		t.u[WORD_ORDER == Endianness::littleEndian] = 0x43300000;
+		t.u[WORD_ORDER != Endianness::littleEndian] = v;
+		t.d -= 4503599627370496.0;
+		size_t result = (t.u[WORD_ORDER == Endianness::littleEndian] >> 20) - 0x3FF;
+		return result;
+	}
+
+	Children::Entry& findBucket(const Key& key) {
 		Key sketch;
 		computeKeySketch(key, sketch);
 
-		for (size_t i = 0; i < m_childrenCount; ++i) {
+		size_t blockLength = m_children.count() * m_children.count() * m_children.count() * m_children.count() + 1u;
 
+		unsigned long long replicatedSketch = 0;
+		for (size_t i = 0; i < m_children.count(); ++i) {
+			replicatedSketch += 1ull << (i * blockLength);
 		}
+
+		unsigned long long mask = 0;
+		for (size_t i = 0; i < m_children.count() - 1u; ++i) {
+			mask += 1ull << (i * blockLength + blockLength - 1u);
+		}
+
+		replicatedSketch *= static_cast<unsigned long long>(sketch);
+		replicatedSketch = static_cast<unsigned long long>(m_sketch) - replicatedSketch;
+		replicatedSketch &= mask;
+
+		size_t; childIndex = m_children.count() - 1;
+		if (replicatedSketch != 0) {
+			childIndex = findMSB(replicatedSketch);
+		}
+
+		return m_children[childIndex];
 	}
 
 	/* Computes a node sketch.
@@ -100,25 +277,19 @@ private:
 	void computeNodeSketch() {
 		m_sketch.reset();
 
-		if (m_childrenCount < 2) {
+		if (m_children.count() < 2u) {
 			return;
-		}
+		}		
 		
-		for (size_t nodeIdx = 0; nodeIdx < capacity; ++nodeIdx) {
-			const Node* node = m_children[nodeIdx];
-			if (node == nullptr) {
-				continue;
-			}
-
+		Key sketch;
+		for (size_t i = 0; i < m_children.count(); ++i) {
 			// Compute child's sketch
-			Key sketch;
-			computeKeySketch(node->m_key, sketch);
-
-			m_sketch |= sketch;
+			computeKeySketch(m_children[i].first, sketch);
+			m_sketch |= (sketch << i);
 		}
 	}
 
-	void computeKeySketch(const Key& key, Key& sketch) {
+	void computeKeySketch(const Key& key, Key& sketch) const {
 		Key branchingPoints;
 		const size_t branchingPointsCount = determineBranchingPoints(key, branchingPoints);
 
@@ -129,7 +300,7 @@ private:
 			}
 		}
 
-		Key sketch = branchingPoints & node->m_key;
+		sketch = branchingPoints & key;
 
 		// Create magic number m
 		vector<bool> mParts((size_t)std::pow(branchingPointsCount, 3));
@@ -175,43 +346,25 @@ private:
 				m += 1ull << (i + m_ith);
 				++id;
 			}
-		}
+		}		
 
-		unsigned long long product = static_cast<unsigned long long>(sketch) * m;
-		product >>= minPower;
-
-		sketch = product;
+		sketch = (static_cast<unsigned long long>(sketch) * m) >> minPower;
 		sketch.set(mParts.size());
-		sketch <<= nodeIdx;
 	}
 
-	size_t determineBranchingPoints(const Key& nodeKey, Key& branchingPoints) {
-		const size_t key = static_cast<size_t>(nodeKey);
-		size_t pos = capacity / 2;
-		size_t count = 0;
-		for (size_t bit_idx = 1; bit_idx < KeyLength; ++bit_idx) {
-			size_t lb, hb; // Search boundary
+	size_t determineBranchingPoints(const Key& nodeKey, Key& branchingPoints) const {
+		size_t keyPos = 0;
+		size_t treePos = 0;
+		constexpr size_t nonLeafHeight = capacity - 1;
+		while (treePos < nonLeafHeight) {			
+			const size_t sibling = treePos * 2 + (2 - nodeKey[keyPos]);
 
-			if (key < pos) { // We're in the left subtree, search in right
-				lb = pos;
-				hb = pos + capacity >> bit_idx;
-			} else { // We're in the right subtree, search in the left
-				lb = pos - capacity >> bit_idx;
-				hb = pos;
-			}
-			while ((lb < hb) && (m_children[lb] == nullptr)) {
-				++lb;
-			}
-
-			// Determine if there are a branching point
-			branchingPoints.set(bit_idx - 1, lb != hb);
-			count += lb != hb;
-
-			if (key < pos) {
-				pos /= 2;
-			} else {
-				pos += pos / 2;
-			}
+			// There is a branching point if sibling node exists
+			branchingPoints.set(keyPos, m_children.tree[sibling]);
+			
+			treePos *= 2;
+			treePos += 1 + nodeKey[keyPos];
+			++keyPos;
 		}
 		return count;
 	}
@@ -220,20 +373,30 @@ private:
 template< size_t KeyLength, class Value >
 class fusion_tree_static<KeyLength, Value>::Node_Leaf : public Node {
 public:
+	Node_Leaf(const Value& value) :
+		m_value(value)
+	{}
+	Node_Leaf(Value&& value) :
+		m_value(std::move(value))
+	{}
+
 	virtual ~Node_Leaf() override = default;
 
-	virtual bool isLeaf() const override {
+	virtual static bool isLeaf() const override {
 		return true;
+	}
+
+	const Value& data() const {
+		return m_data;
+	}
+	Value& data() {
+		return m_data;
 	}
 
 private:
 	Value m_data;
 };
 
-
-
-template<size_t KeyLength, class Value>
-constexpr size_t fusion_tree_static<KeyLength, Value>::Node::capacity = (size_t)std::pow(KeyLength, 1.0 / 5.0);
 
 #endif // FUSION_TREE_H
 
