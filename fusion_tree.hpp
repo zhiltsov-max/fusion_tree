@@ -5,6 +5,7 @@
 #include <cmath>
 #include <array>
 #include <vector>
+#include <cstdint>
 
 /* KeyLength == log(u) where u is |U| - universe size
  * See http://courses.csail.mit.edu/6.897/spring03/scribe_notes/L4/lecture4.pdf
@@ -221,7 +222,7 @@ private:
 			The code loads a 64-bit (IEEE-754 floating-point) double with a 32-bit integer
 			(with no paddding bits) by storing the integer in the mantissa while the exponent is set to 2^52.
 			From this newly minted double, 2^52 (expressed as a double) is subtracted,
-			which sets the resulting exponent to the log base 2 of the input value, v.
+			which sets the resulting exponent to the log base 2 of the input value, number.
 			All that is left is shifting the exponent bits into position (20 bits right) and
 			subtracting the bias, 0x3FF (which is 1023 decimal).
 
@@ -230,15 +231,15 @@ private:
 		*/
 		determineEndianness();
 
-		union { 
-			unsigned int u[2]; 
-			double d; 
-		} t;
-
-		t.u[WORD_ORDER == Endianness::littleEndian] = 0x43300000;
-		t.u[WORD_ORDER != Endianness::littleEndian] = v;
-		t.d -= 4503599627370496.0;
-		size_t result = (t.u[WORD_ORDER == Endianness::littleEndian] >> 20) - 0x3FF;
+		std::uint32_t u[2] = {0, 0}; 
+		double d; 
+		
+		u[WORD_ORDER == Endianness::littleEndian] = 0x43300000;
+		u[WORD_ORDER != Endianness::littleEndian] = static_cast<unsigned int>(number);
+		memcpy(&d, u, sizeof(double));
+		d -= 4503599627370496.0;
+		memcpy(u, &d, sizeof(double));
+		size_t result = (u[WORD_ORDER == Endianness::littleEndian] >> 20) - 0x3FF;
 		return result;
 	}
 
